@@ -508,6 +508,146 @@ class PDFExtractor:
 
         return code_blocks
 
+    def detect_headings_by_font(self, page):
+        """
+        通过字体属性检测标题（字体大小、粗体、位置）
+
+        Returns:
+            list: 检测到的标题列表
+        """
+        headings = []
+        blocks = page.get_text("dict")["blocks"]
+
+        # 分析页面所有文本块，统计字体大小分布
+        font_sizes = []
+        for block in blocks:
+            if 'lines' not in block:
+                continue
+            for line in block['lines']:
+                for span in line['spans']:
+                    font_sizes.append(span['size'])
+
+        if not font_sizes:
+            return []
+
+        # 计算平均字体大小和标准差
+        avg_size = sum(font_sizes) / len(font_sizes)
+        std_dev = (sum((s - avg_size) ** 2 for s in font_sizes) / len(font_sizes)) ** 0.5
+
+        # 定义标题阈值
+        # H1: 字体大小 > 平均 + 1.5*标准差
+        # H2: 字体大小 > 平均 + 1.0*标准差
+        # H3: 字体大小 > 平均 + 0.5*标准差
+        h1_threshold = avg_size + 1.5 * std_dev
+        h2_threshold = avg_size + 1.0 * std_dev
+        h3_threshold = avg_size + 0.5 * std_dev
+
+        for block in blocks:
+            if 'lines' not in block:
+                continue
+
+            for line in block['lines']:
+                line_text = ""
+                line_size = 0
+                is_bold = False
+
+                for span in line['spans']:
+                    line_text += span['text']
+                    line_size = max(line_size, span['size'])
+                    # 检查是否粗体
+                    font_name = span['font'].lower()
+                    if 'bold' in font_name or 'black' in font_name:
+                        is_bold = True
+
+                line_text = line_text.strip()
+
+                # 跳过空行和过长文本（标题通常较短）
+                if not line_text or len(line_text) > 200:
+                    continue
+
+                # 确定标题级别
+                level = None
+                if line_size >= h1_threshold or (line_size >= avg_size * 1.3 and is_bold):
+                    level = 'h1'
+                elif line_size >= h2_threshold or (line_size >= avg_size * 1.15 and is_bold):
+                    level = 'h2'
+                elif line_size >= h3_threshold:
+                    level = 'h3'
+
+                if level:
+                    headings.append({
+                        'level': level,
+                        'text': line_text,
+                        'font_size': line_size,
+                        'is_bold': is_bold,
+                        'detection_method': 'font_analysis'
+                    })
+
+        return headings
+
+    def detect_headings_by_pattern(self, text):
+        """
+        通过文本模式检测标题（编号、大写、特定格式）
+
+        Returns:
+            list: 检测到的标题列表
+        """
+        headings = []
+        lines = text.split('\n')
+
+        # 常见标题模式
+        patterns = [
+            # "1. Introduction", "1.1 Overview"
+            (r'^(\d+\.(?:\d+\.)*)\s+([A-Z].*)', 'numbered'),
+            # "Chapter 1: Getting Started"
+            (r'^(Chapter|Section|Part)\s+(\d+)[:\s]+(.+)', 'chapter'),
+            # "INTRODUCTION" (全大写)
+            (r'^([A-Z][A-Z\s]{5,})$', 'uppercase'),
+            # "Introduction" (首字母大写，短行)
+            (r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4})$', 'title_case'),
+        ]
+
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line or len(line) > 150:
+                continue
+
+            for pattern, pattern_type in patterns:
+                match = re.match(pattern, line)
+                if match:
+                    # 确定级别
+                    if pattern_type == 'numbered':
+                        # 根据编号深度确定级别
+                        number = match.group(1)
+                        depth = number.count('.')
+                        level = f'h{min(depth + 1, 6)}'
+                        text = match.group(2)
+                    elif pattern_type == 'chapter':
+                        level = 'h1'
+                        text = match.group(3)
+                    elif pattern_type == 'uppercase':
+                        level = 'h2'
+                        text = match.group(1).title()  # 转为标题格式
+                    elif pattern_type == 'title_case':
+                        # 检查下一行是否为正文（长文本）
+                        if i + 1 < len(lines) and len(lines[i + 1].strip()) > 50:
+                            level = 'h3'
+                            text = match.group(1)
+                        else:
+                            continue
+                    else:
+                        continue
+
+                    headings.append({
+                        'level': level,
+                        'text': text,
+                        'pattern_type': pattern_type,
+                        'detection_method': 'pattern_analysis'
+                    })
+                    break  # 匹配成功，跳出pattern循环
+
+        return headings
+
     def detect_chapter_start(self, page_data):
         """
         Detect if a page starts a new chapter/section.
@@ -519,8 +659,28 @@ class PDFExtractor:
         # Check for h1 or h2 at start of page
         if headings:
             first_heading = headings[0]
+            title = first_heading['text']
+
+            # 额外验证：排除一些误识别的情况
+            # 排除过短的标题（可能是图示）
+            if len(title.strip()) < 5 or title.startswith(("图", "表", "公式")):
+                return False, None
+
+            # 排除纯数字或特殊字符
+            if re.match(r'^[\d\.\s\-_]+$', title):
+                return False, None
+            
+            # 跳过字体比较小的标题，一般标题字体大于20
+            if 'font_size' in first_heading and first_heading['font_size'] < 18:
+                return False, None
+            
+            # 跳过类似数字1.1等小标题
+            if re.match(r'^\d+\.\d+(?:\s|$)', title.strip()):
+                return False, None
+            
             # H1 headings are strong indicators of chapters
-            if first_heading['level'] in ['h1', 'h2']:
+            # if first_heading['level'] in ['h1', 'h2']:
+            if first_heading['level'] in ['h1']:
                 return True, first_heading['text']
 
         # Check for specific chapter markers in text
@@ -800,18 +960,46 @@ class PDFExtractor:
         # Sort by quality score (highest first)
         code_samples.sort(key=lambda x: x['quality_score'], reverse=True)
 
-        # Extract headings from markdown
-        headings = []
+        # 方法1：从Markdown提取（原有方法）
+        headings_from_markdown = []
         for line in markdown.split('\n'):
             if line.startswith('#'):
                 level = len(line) - len(line.lstrip('#'))
                 text = line.lstrip('#').strip()
                 if text:
-                    headings.append({
+                    headings_from_markdown.append({
                         'level': f'h{level}',
-                        'text': text
+                        'text': text,
+                        'detection_method': 'markdown'
                     })
 
+        # 方法2：基于字体属性检测
+        headings_from_font = self.detect_headings_by_font(page)
+
+        # 方法3：基于文本模式检测
+        headings_from_pattern = self.detect_headings_by_pattern(text)
+
+        # 合并并去重
+        all_headings = headings_from_markdown + headings_from_font + headings_from_pattern
+
+        # 去重：优先保留markdown方法，然后是font，最后是pattern
+        unique_headings = {}
+        for heading in all_headings:
+            key = heading['text'].lower().strip()
+            if key not in unique_headings:
+                unique_headings[key] = heading
+            else:
+                # 优先级：markdown > font > pattern
+                priority = {'markdown': 3, 'font_analysis': 2, 'pattern_analysis': 1}
+                current_priority = priority.get(unique_headings[key]['detection_method'], 0)
+                new_priority = priority.get(heading['detection_method'], 0)
+                if new_priority > current_priority:
+                    unique_headings[key] = heading
+
+        headings = list(unique_headings.values())
+        # 按页面出现顺序排序（简化版，实际可以通过位置信息排序）
+        headings.sort(key=lambda h: h['text'])
+        
         page_data = {
             'page_number': page_num + 1,  # 1-indexed for humans
             'text': text.strip(),

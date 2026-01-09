@@ -249,7 +249,7 @@ class PDFToSkillConverter:
                 # Add text content
                 if page.get('text'):
                     # Limit to first 1000 chars per page to avoid huge files
-                    text = page['text'][:1000]
+                    text = page['text'][:10000]
                     f.write(f"{text}\n\n")
 
                 # Add code samples (check both 'code_samples' and 'code_blocks' for compatibility)
