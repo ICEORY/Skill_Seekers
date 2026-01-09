@@ -749,7 +749,15 @@ class PDFExtractor:
             text = page.get_text("text")
 
         # Extract markdown (better structure preservation)
-        markdown = page.get_text("markdown")
+        # markdown = page.get_text("markdown")
+        try:
+            markdown = page.get_text("markdown")
+        except (AssertionError, ValueError) as e:
+            from markdownify import markdownify
+            # Fallback to text format if markdown is not supported
+            self.log(f"Cannot get markdown context, converted from html instead: {e}")
+            html_content = page.get_text("html")
+            markdown = markdownify(html_content)
 
         # Extract tables (Priority 2)
         tables = self.extract_tables_from_page(page)

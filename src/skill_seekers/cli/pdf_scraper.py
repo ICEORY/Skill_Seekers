@@ -68,8 +68,9 @@ class PDFToSkillConverter:
         self.description = config.get('description', f'Use when referencing {self.name} documentation')
 
         # Paths
-        self.skill_dir = f"output/{self.name}"
-        self.data_file = f"output/{self.name}_extracted.json"
+        save_dir = config.get('save_dir', 'output')
+        self.skill_dir = os.path.join(save_dir, self.name) 
+        self.data_file = os.path.join(save_dir, f"{self.name}_extracted.json") 
 
         # Extraction options
         self.extract_options = config.get('extract_options', {})
