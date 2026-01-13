@@ -69,8 +69,14 @@ class PDFToSkillConverter:
 
         # Paths
         save_dir = config.get('save_dir', 'output')
-        self.skill_dir = os.path.join(save_dir, self.name) 
-        self.data_file = os.path.join(save_dir, f"{self.name}_extracted.json") 
+        self.skill_dir = os.path.join(save_dir, self.name)
+        self.data_file = os.path.join(save_dir, f"{self.name}_extracted.json")
+
+        # Scripts configuration
+        self.scripts_config = config.get('scripts_config', {
+            'line_threshold': 30,
+            'min_quality_score': 6.0
+        })
 
         # Extraction options
         self.extract_options = config.get('extract_options', {})
@@ -80,6 +86,9 @@ class PDFToSkillConverter:
 
         # Extracted data
         self.extracted_data = None
+
+        # Scripts tracking
+        self.extracted_scripts = []
 
     def extract_pdf(self):
         """Extract content from PDF using pdf_extractor_poc.py"""
@@ -225,6 +234,12 @@ class PDFToSkillConverter:
         for cat_key, cat_data in categorized.items():
             self._generate_reference_file(cat_key, cat_data)
 
+        # Generate scripts documentation if any scripts were extracted
+        if self.extracted_scripts:
+            print(f"\n📜 Generating scripts documentation...")
+            self._generate_scripts_readme()
+            print(f"   ✅ Extracted {len(self.extracted_scripts)} scripts to scripts/ directory")
+
         # Generate index
         self._generate_index(categorized)
 
@@ -256,9 +271,46 @@ class PDFToSkillConverter:
                 code_list = page.get('code_samples') or page.get('code_blocks')
                 if code_list:
                     f.write("### Code Examples\n\n")
-                    for code in code_list[:3]:  # Limit to top 3
+
+                    for code_index, code in enumerate(code_list):
                         lang = code.get('language', '')
-                        f.write(f"```{lang}\n{code['code']}\n```\n\n")
+                        quality = code.get('quality_score', 0)
+
+                        # Clean code whitespace before processing
+                        cleaned_code = self._clean_code_whitespace(code['code'])
+                        line_count = len(cleaned_code.split('\n'))
+
+                        # Try to extract to scripts/
+                        # Note: _extract_code_to_script will also clean whitespace internally
+                        script_info = self._extract_code_to_script(
+                            code, page['page_number'], code_index
+                        )
+
+                        if script_info:
+                            # Code extracted to scripts/, reference it in markdown
+                            f.write(f"**{lang.upper()} Example** "
+                                   f"(Lines: {line_count}, Quality: {quality:.1f}/10)\n\n")
+
+                            f.write(f"**Script File**: [`{script_info['filename']}`](../{script_info['relative_path']})\n\n")
+
+                            # Show code preview (first 10 lines) - use cleaned code
+                            code_lines = cleaned_code.split('\n')
+                            preview_lines = code_lines[:10]
+                            preview = '\n'.join(preview_lines)
+
+                            f.write(f"**Preview** (first 10 lines):\n\n")
+                            f.write(f"```{lang}\n{preview}\n")
+                            if len(code_lines) > 10:
+                                f.write(f"... ({len(code_lines) - 10} more lines)\n")
+                            f.write("```\n\n")
+
+                            f.write(f"**Usage**: Download and run the script directly, or refer to it in your code.\n\n")
+
+                        else:
+                            # Short code, inline display - use cleaned code
+                            f.write(f"**{lang.upper()} Example** "
+                                   f"(Lines: {line_count}, Quality: {quality:.1f}/10)\n\n")
+                            f.write(f"```{lang}\n{cleaned_code}\n```\n\n")
 
                 # Add images
                 if page.get('images'):
@@ -334,6 +386,25 @@ class PDFToSkillConverter:
             for cat_key, cat_data in categorized.items():
                 f.write(f"- **{cat_data['title']}**: {len(cat_data['pages'])} pages\n")
 
+            # Add scripts index if any scripts were extracted
+            if self.extracted_scripts:
+                f.write(f"\n## Executable Scripts\n\n")
+                f.write(f"This skill includes **{len(self.extracted_scripts)} executable code examples** ")
+                f.write(f"extracted from the documentation.\n\n")
+
+                # Count by language
+                scripts_by_lang = {}
+                for script in self.extracted_scripts:
+                    lang = script['language']
+                    scripts_by_lang[lang] = scripts_by_lang.get(lang, 0) + 1
+
+                f.write("**Available Languages:**\n\n")
+                for lang, count in sorted(scripts_by_lang.items(), key=lambda x: x[1], reverse=True):
+                    f.write(f"- {lang.upper()}: {count} scripts\n")
+
+                f.write("\n**Scripts Directory**: `scripts/`\n\n")
+                f.write("See [`scripts/README.md`](scripts/README.md) for the complete list of available scripts.\n\n")
+
             f.write("\n## Quick Reference\n\n")
 
             # Get high-quality code samples
@@ -371,6 +442,341 @@ class PDFToSkillConverter:
         safe = re.sub(r'[^\w\s-]', '', name.lower())
         safe = re.sub(r'[-\s]+', '_', safe)
         return safe
+
+    def _clean_code_whitespace(self, code):
+        """
+        Clean non-standard whitespace characters from code.
+
+        Fixes:
+        - Replaces non-breaking spaces (U+00A0) with regular spaces
+        - Normalizes other Unicode whitespace to standard spaces
+        - Preserves code structure and indentation
+
+        Args:
+            code: Code string with potential whitespace issues
+
+        Returns:
+            str: Cleaned code with standard whitespace
+        """
+        # Replace non-breaking space (U+00A0) with regular space
+        code = code.replace('\xa0', ' ')
+
+        # Replace other common non-standard spaces
+        code = code.replace('\u2002', ' ')  # En space
+        code = code.replace('\u2003', ' ')  # Em space
+        code = code.replace('\u2009', ' ')  # Thin space
+        code = code.replace('\u200a', ' ')  # Hair space
+
+        # Replace zero-width spaces (invisible characters that can break parsing)
+        code = code.replace('\u200b', '')  # Zero-width space
+        code = code.replace('\ufeff', '')  # Zero-width no-break space (BOM)
+
+        return code
+
+    def _extract_code_to_script(self, code_block, page_num, code_index):
+        """
+        Extract code block to independent script file
+
+        Args:
+            code_block: Code block dict (containing code, language, quality_score, etc.)
+            page_num: Page number
+            code_index: Code block index within page
+
+        Returns:
+            dict: Script file info, or None if extraction not needed
+        """
+        # Get configuration
+        line_threshold = self.scripts_config.get('line_threshold', 30)
+        min_quality = self.scripts_config.get('min_quality_score', 6.0)
+
+        # Get code information
+        code = code_block.get('code', '')
+        language = code_block.get('language', 'txt')
+        quality_score = code_block.get('quality_score', 0)
+
+        # Don't extract code that starts with indentation (class methods, not standalone functions)
+        if code and code[0] in (' ', '\t'):
+            return None
+
+        # Clean whitespace issues (non-breaking spaces, etc.)
+        code = self._clean_code_whitespace(code)
+
+        # Check if extraction is needed
+        line_count = len(code.split('\n'))
+
+        # Check line count threshold
+        if line_count < line_threshold:
+            return None
+
+        # Check quality threshold
+        if quality_score < min_quality:
+            return None
+
+        # Generate filename
+        script_filename = self._generate_script_filename(
+            language, page_num, code_index, code
+        )
+
+        # Use flat directory structure (no language subdirectories)
+        script_dir = os.path.join(self.skill_dir, 'scripts')
+        os.makedirs(script_dir, exist_ok=True)
+
+        script_path = os.path.join(script_dir, script_filename)
+
+        # Always add source comments
+        code_content = self._add_source_comments(
+            code, language, page_num, self.name
+        )
+
+        # Save script file
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write(code_content)
+
+        # Record script information
+        script_info = {
+            'filename': script_filename,
+            'relative_path': f"scripts/{script_filename}",
+            'absolute_path': script_path,
+            'language': language,
+            'line_count': line_count,
+            'quality_score': quality_score,
+            'page_number': page_num,
+            'code_index': code_index
+        }
+
+        self.extracted_scripts.append(script_info)
+
+        return script_info
+
+    def _generate_script_filename(self, language, page_num, code_index, code):
+        """
+        Generate meaningful script filename
+
+        Args:
+            language: Programming language
+            page_num: Page number
+            code_index: Code block index
+            code: Code content
+
+        Returns:
+            str: Filename
+        """
+        # Try to extract function/class name from code
+        name_hint = self._extract_code_name_hint(code, language)
+
+        # If meaningful name extracted
+        if name_hint:
+            base_name = name_hint
+        else:
+            # Use default naming
+            base_name = f"example_page{page_num}_code{code_index}"
+
+        # Add language extension
+        ext = self._get_file_extension(language)
+
+        # Sanitize filename (remove special characters)
+        safe_name = re.sub(r'[^\w\-]', '_', base_name)
+
+        return f"{safe_name}.{ext}"
+
+    def _extract_code_name_hint(self, code, language):
+        """
+        Extract meaningful name from code (function name, class name, etc.)
+
+        Args:
+            code: Code content
+            language: Programming language
+
+        Returns:
+            str: Extracted name, or None
+        """
+        # Python
+        if language == 'python':
+            # Match class definition FIRST (prioritize class name over function name)
+            match = re.search(r'class\s+([a-zA-Z_][a-zA-Z0-9_]*)', code)
+            if match:
+                return match.group(1)
+
+            # Match function definition: def function_name(
+            match = re.search(r'def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', code)
+            if match:
+                return match.group(1)
+
+        # JavaScript/TypeScript
+        elif language in ['javascript', 'typescript', 'js', 'ts']:
+            # Match function: function functionName(
+            match = re.search(r'function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(', code)
+            if match:
+                return match.group(1)
+
+            # Match arrow function: const functionName = (
+            match = re.search(r'(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*\(', code)
+            if match:
+                return match.group(1)
+
+        # Java/C++/C#
+        elif language in ['java', 'cpp', 'c', 'csharp']:
+            # Match method: public void methodName(
+            match = re.search(r'(?:public|private|protected)?\s*(?:static)?\s*\w+\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', code)
+            if match:
+                return match.group(1)
+
+            # Match class: class ClassName
+            match = re.search(r'class\s+([a-zA-Z_][a-zA-Z0-9_]*)', code)
+            if match:
+                return match.group(1)
+
+        # Go
+        elif language == 'go':
+            # Match function: func FunctionName(
+            match = re.search(r'func\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', code)
+            if match:
+                return match.group(1)
+
+        return None
+
+    def _get_file_extension(self, language):
+        """
+        Get file extension based on language
+
+        Args:
+            language: Programming language
+
+        Returns:
+            str: File extension
+        """
+        extensions = {
+            'python': 'py',
+            'javascript': 'js',
+            'typescript': 'ts',
+            'java': 'java',
+            'cpp': 'cpp',
+            'c': 'c',
+            'csharp': 'cs',
+            'go': 'go',
+            'rust': 'rs',
+            'ruby': 'rb',
+            'php': 'php',
+            'swift': 'swift',
+            'kotlin': 'kt',
+            'scala': 'scala',
+            'r': 'r',
+            'matlab': 'm',
+            'bash': 'sh',
+            'shell': 'sh',
+            'sql': 'sql',
+            'json': 'json',
+            'yaml': 'yaml',
+            'xml': 'xml',
+            'html': 'html',
+            'css': 'css',
+        }
+
+        return extensions.get(language.lower(), 'txt')
+
+    def _add_source_comments(self, code, language, page_num, doc_name):
+        """
+        Add source attribution comments to code
+
+        Args:
+            code: Original code
+            language: Programming language
+            page_num: Page number
+            doc_name: Document name
+
+        Returns:
+            str: Code with added comments
+        """
+        # Get comment symbol
+        comment_styles = {
+            'python': '#',
+            'ruby': '#',
+            'bash': '#',
+            'shell': '#',
+            'r': '#',
+            'yaml': '#',
+            'javascript': '//',
+            'typescript': '//',
+            'java': '//',
+            'cpp': '//',
+            'c': '//',
+            'csharp': '//',
+            'go': '//',
+            'rust': '//',
+            'swift': '//',
+            'kotlin': '//',
+            'scala': '//',
+            'php': '//',
+        }
+
+        comment_char = comment_styles.get(language.lower(), '#')
+
+        # Generate comment header
+        header = f"""{comment_char} Source: {doc_name} Documentation (Page {page_num})
+{comment_char} Extracted by Skill Seekers
+{comment_char}
+{comment_char} This code example is from the official documentation.
+{comment_char} You can modify and use it for your projects.
+
+"""
+
+        return header + code
+
+    def _generate_scripts_readme(self):
+        """
+        Generate README.md for scripts/ directory
+        """
+        if not self.extracted_scripts:
+            return
+
+        readme_path = os.path.join(self.skill_dir, 'scripts', 'README.md')
+
+        with open(readme_path, 'w', encoding='utf-8') as f:
+            f.write(f"# {self.name.title()} - Code Examples\n\n")
+
+            f.write("This directory contains executable code examples extracted from the documentation.\n\n")
+
+            f.write("## Available Scripts\n\n")
+
+            # Group by language
+            scripts_by_lang = {}
+            for script in self.extracted_scripts:
+                lang = script['language']
+                if lang not in scripts_by_lang:
+                    scripts_by_lang[lang] = []
+                scripts_by_lang[lang].append(script)
+
+            # Generate table for each language
+            for lang, scripts in sorted(scripts_by_lang.items()):
+                f.write(f"### {lang.upper()}\n\n")
+                f.write("| Script | Lines | Quality | Page |\n")
+                f.write("|--------|-------|---------|------|\n")
+
+                for script in scripts:
+                    filename = script['filename']
+                    relative_path = script['relative_path']
+                    line_count = script['line_count']
+                    quality = script['quality_score']
+                    page_num = script['page_number']
+
+                    f.write(f"| [{filename}]({relative_path}) | {line_count} | {quality:.1f}/10 | {page_num} |\n")
+
+                f.write("\n")
+
+            f.write("## Usage\n\n")
+            f.write("1. Navigate to the desired script directory\n")
+            f.write("2. Download or copy the script file\n")
+            f.write("3. Run it in your local environment\n\n")
+
+            f.write("## Notes\n\n")
+            f.write("- All scripts include source attribution comments\n")
+            f.write("- Scripts are extracted from official documentation\n")
+            f.write("- Quality scores indicate code completeness and correctness\n\n")
+
+            f.write("---\n\n")
+            f.write("*Generated by Skill Seekers*\n")
+
+        print(f"   Generated: scripts/README.md")
 
 
 def main():

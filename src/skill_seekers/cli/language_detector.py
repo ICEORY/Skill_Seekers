@@ -461,7 +461,9 @@ class LanguageDetector:
             compiled_patterns = []
             for i, (pattern, weight) in enumerate(patterns):
                 try:
-                    compiled = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
+                    # Use MULTILINE but not IGNORECASE to preserve case sensitivity
+                    # This is important for distinguishing Swift's "Self" from Python's "self"
+                    compiled = re.compile(pattern, re.MULTILINE)
                     compiled_patterns.append((compiled, weight))
                 except re.error as e:
                     logger.error(

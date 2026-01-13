@@ -472,25 +472,205 @@ class PDFExtractor:
         """
         Detect code blocks by common code patterns (keywords, syntax).
 
+        IMPROVED: Uses indentation-based detection to capture complete code blocks
+        including multi-method classes and full function bodies.
+
+        Also detects "continuation" blocks - indented code at start of text
+        that is likely a continuation from previous page.
+
         Returns list of detected code snippets.
         """
         code_blocks = []
+        lines = text.split('\n')
+        processed_lines = set()  # Track which lines we've already included in blocks
 
-        # Common code patterns that span multiple lines
-        patterns = [
-            # Function definitions
-            (r'((?:def|function|func|fn|public|private)\s+\w+\s*\([^)]*\)\s*[{:]?[^}]*[}]?)', 'function'),
-            # Class definitions
-            (r'(class\s+\w+[^{]*\{[^}]*\})', 'class'),
-            # Import statements block
-            (r'((?:import|require|use|include)[^\n]+(?:\n(?:import|require|use|include)[^\n]+)*)', 'imports'),
-        ]
+        # Check if text starts with indented code (continuation from previous page)
+        # Skip any leading non-Python content first
+        first_code_line_idx = 0
+        for idx, line in enumerate(lines):
+            stripped = line.lstrip()
 
-        for pattern, block_type in patterns:
-            matches = re.finditer(pattern, text, re.MULTILINE | re.DOTALL)
-            for match in matches:
-                code_text = match.group(1).strip()
-                if len(code_text) > 15:
+            # Skip empty lines
+            if not stripped:
+                continue
+
+            # Skip section headers (e.g., "1. Title", "1.1 Subtitle", "1.1.1 Sub-subtitle")
+            if re.match(r'^\d+(?:\.\d+)*\.?\s+', stripped):
+                # Check if it has Chinese characters or looks like a title
+                if re.search(r'[\u4e00-\u9fff]', stripped) or stripped[0].isupper():
+                    first_code_line_idx = idx + 1
+                    continue
+
+            # Skip markdown headers
+            if stripped and re.match(r'^[\u4e00-\u9fff\s]+$', stripped) and len(stripped) < 50:
+                first_code_line_idx = idx + 1
+                continue
+
+            # Found first potential code line
+            first_code_line_idx = idx
+            break
+
+        # Now check if the first code line is indented (continuation)
+        if first_code_line_idx < len(lines):
+            first_code_line = lines[first_code_line_idx]
+            if first_code_line and first_code_line[0] in (' ', '\t'):
+                # Find all indented lines starting from first_code_line_idx
+                continuation_lines = []
+                for i in range(first_code_line_idx, len(lines)):
+                    line = lines[i]
+                    stripped = line.lstrip()
+
+                    # Stop at first top-level definition or non-code content
+                    if line and line[0] not in (' ', '\t', '\xa0'):
+                        # Check if it's a new top-level definition
+                        if stripped.startswith(('class ', 'def ', 'function ', '#!')):
+                            break
+                        # Check if it's non-Python content
+                        if re.match(r'^\d+\.(?:\d+\.?)?\s+[\u4e00-\u9fff]', stripped):  # Section header
+                            break
+                        if stripped.startswith(('kubectl ', '#!/bin/bash', '#!/bin/sh')):  # Bash
+                            break
+
+                    # Include this line in continuation
+                    continuation_lines.append(line)
+                    processed_lines.add(i)
+
+                # If we found continuation lines, create a continuation block
+                if continuation_lines and len(continuation_lines) >= 3:  # At least 3 lines
+                    code_text = '\n'.join(continuation_lines)
+                    if len(code_text.strip()) > 50:  # Minimum content
+                        lang, confidence = self.detect_language_from_code(code_text)
+                        quality = self.score_code_quality(code_text, lang, confidence)
+                        is_valid, issues = self.validate_code_syntax(code_text, lang)
+
+                        code_blocks.append({
+                            'code': code_text,
+                            'language': lang,
+                            'confidence': confidence,
+                            'quality_score': quality,
+                            'is_valid': is_valid,
+                            'validation_issues': issues if not is_valid else [],
+                            'detection_method': 'pattern',
+                            'pattern_type': 'continuation',  # Mark as continuation
+                            'is_continuation': True  # Flag for merge logic
+                        })
+
+        i = 0
+        while i < len(lines):
+            # Skip if this line was already processed
+            if i in processed_lines:
+                i += 1
+                continue
+
+            line = lines[i]
+            stripped = line.lstrip()
+
+            # Detect code block starting markers
+            is_class_start = stripped.startswith('class ')
+            is_function_start = (
+                stripped.startswith('def ') or
+                stripped.startswith('function ') or
+                stripped.startswith('func ') or
+                stripped.startswith('async def ') or
+                (stripped.startswith(('public ', 'private ', 'protected ')) and
+                 (' def ' in stripped or ' function ' in stripped or ' func ' in stripped))
+            )
+            is_import_start = (
+                stripped.startswith('import ') or
+                stripped.startswith('from ') or
+                stripped.startswith('require ') or
+                stripped.startswith('use ') or
+                stripped.startswith('include ')
+            )
+
+            if is_class_start or is_function_start:
+                # Look backwards for import statements to include with this code block
+                import_lines = []
+                k = i - 1
+                while k >= 0:
+                    prev_line = lines[k]
+                    prev_stripped = prev_line.lstrip()
+
+                    # Stop if we hit another class/function or processed line
+                    if k in processed_lines:
+                        break
+                    if prev_stripped.startswith(('class ', 'def ', 'function ', 'func ', 'async def ')):
+                        break
+
+                    # Collect import statements
+                    if (prev_stripped.startswith('import ') or
+                        prev_stripped.startswith('from ') or
+                        prev_stripped.startswith('require ') or
+                        prev_stripped.startswith('use ') or
+                        prev_stripped.startswith('include ')):
+                        import_lines.insert(0, prev_line)
+                        processed_lines.add(k)
+                    # Also include empty lines between imports
+                    elif not prev_stripped and import_lines:
+                        import_lines.insert(0, prev_line)
+                        processed_lines.add(k)
+                    # Stop if we hit non-import, non-empty line
+                    elif prev_stripped:
+                        break
+
+                    k -= 1
+
+                # Extract complete code block based on indentation
+                base_indent = len(line) - len(stripped)
+                code_lines = import_lines + [line]  # Prepend imports
+                processed_lines.add(i)
+                j = i + 1
+
+                # Collect all lines that belong to this block
+                while j < len(lines):
+                    next_line = lines[j]
+                    next_stripped = next_line.lstrip()
+                    next_indent = len(next_line) - len(next_stripped)
+
+                    # Empty line or comment: continue
+                    if not next_stripped or next_stripped.startswith('#'):
+                        code_lines.append(next_line)
+                        processed_lines.add(j)
+                        j += 1
+                        continue
+
+                    # For classes: include all methods (deeper indentation)
+                    if is_class_start:
+                        # Include all content with deeper indentation than class definition
+                        if next_indent > base_indent:
+                            code_lines.append(next_line)
+                            processed_lines.add(j)
+                            j += 1
+                            continue
+                        # Also include same-level 'def' if using standard indentation
+                        elif next_indent == base_indent and next_stripped.startswith('@'):
+                            # Decorator at class level
+                            code_lines.append(next_line)
+                            processed_lines.add(j)
+                            j += 1
+                            continue
+                        else:
+                            # Less or equal indentation, not a decorator: end of class
+                            break
+
+                    # For functions: include all content with deeper indentation
+                    if is_function_start:
+                        if next_indent > base_indent:
+                            code_lines.append(next_line)
+                            processed_lines.add(j)
+                            j += 1
+                            continue
+                        else:
+                            # Less or equal indentation: end of function
+                            break
+
+                    j += 1
+
+                # Combine code
+                code_text = '\n'.join(code_lines)
+
+                # Filter: minimum length and quality checks
+                if len(code_text.strip()) > 30:  # At least 30 characters
                     lang, confidence = self.detect_language_from_code(code_text)
                     quality = self.score_code_quality(code_text, lang, confidence)
                     is_valid, issues = self.validate_code_syntax(code_text, lang)
@@ -503,8 +683,12 @@ class PDFExtractor:
                         'is_valid': is_valid,
                         'validation_issues': issues if not is_valid else [],
                         'detection_method': 'pattern',
-                        'pattern_type': block_type
+                        'pattern_type': 'class' if is_class_start else 'function'
                     })
+
+                i = j  # Skip to end of block
+            else:
+                i += 1
 
         return code_blocks
 
@@ -565,6 +749,14 @@ class PDFExtractor:
                 if not line_text or len(line_text) > 200:
                     continue
 
+                # 排除 shebang 和代码相关内容
+                if line_text.startswith('#!'):
+                    continue
+                if line_text.startswith(('"""', "'''", '/*', '*/', '//')):
+                    continue
+                if line_text.startswith(('import ', 'from ', 'def ', 'class ', 'function ', 'var ', 'const ', 'let ')):
+                    continue
+
                 # 确定标题级别
                 level = None
                 if line_size >= h1_threshold or (line_size >= avg_size * 1.3 and is_bold):
@@ -610,6 +802,12 @@ class PDFExtractor:
         for i, line in enumerate(lines):
             line = line.strip()
             if not line or len(line) > 150:
+                continue
+
+            # 排除 shebang 和代码相关内容
+            if line.startswith('#!'):
+                continue
+            if line.startswith(('"""', "'''", '/*', '*/', '//', '#', 'import ', 'from ', 'def ', 'class ')):
                 continue
 
             for pattern, pattern_type in patterns:
@@ -705,11 +903,10 @@ class PDFExtractor:
         Merge code blocks that are split across pages.
 
         Detects when a code block at the end of one page continues
-        on the next page.
+        on the next page (possibly across empty pages).
         """
         for i in range(len(pages) - 1):
             current_page = pages[i]
-            next_page = pages[i + 1]
 
             # Check if current page has code blocks
             if not current_page['code_samples']:
@@ -718,38 +915,75 @@ class PDFExtractor:
             # Get last code block of current page
             last_code = current_page['code_samples'][-1]
 
-            # Check if next page starts with code
-            if not next_page['code_samples']:
-                continue
+            # Look ahead to find continuation blocks (possibly across empty pages)
+            j = i + 1
+            while j < len(pages):
+                next_page = pages[j]
 
-            first_next_code = next_page['code_samples'][0]
+                # If next page has code blocks, check if first one is a continuation
+                if next_page['code_samples']:
+                    first_next_code = next_page['code_samples'][0]
 
-            # Same language and detection method = likely continuation
-            if (last_code['language'] == first_next_code['language'] and
-                last_code['detection_method'] == first_next_code['detection_method']):
+                    # Check if this is a continuation block
+                    is_continuation = first_next_code.get('is_continuation', False)
+                    same_language = last_code['language'] == first_next_code['language']
 
-                # Check if last code block looks incomplete (doesn't end with closing brace/etc)
-                last_code_text = last_code['code'].rstrip()
-                continuation_indicators = [
-                    not last_code_text.endswith('}'),
-                    not last_code_text.endswith(';'),
-                    last_code_text.endswith(','),
-                    last_code_text.endswith('\\'),
-                ]
+                    # DON'T merge if next block starts with new script indicators
+                    first_next_line = first_next_code['code'].lstrip().split('\n')[0]
+                    is_new_script = (
+                        first_next_line.startswith('#!') or  # Shebang
+                        first_next_line.startswith('import ') or  # Import statement
+                        first_next_line.startswith('from ') or  # Import statement
+                        first_next_line.startswith('class ') or  # New class definition
+                        first_next_line.startswith('"""') or  # Module docstring
+                        first_next_line.startswith("'''")  # Module docstring
+                    )
 
-                if any(continuation_indicators):
-                    # Merge the code blocks
-                    merged_code = last_code['code'] + '\n' + first_next_code['code']
-                    last_code['code'] = merged_code
-                    last_code['merged_from_next_page'] = True
+                    # Merge if it's a continuation OR if it looks incomplete
+                    should_merge = False
+                    if is_continuation and not is_new_script:
+                        # For continuation blocks, ignore language mismatch (may be misdetected)
+                        should_merge = True
+                        self.log(f"  Merging continuation block from page {j+1}")
+                    elif same_language and not is_new_script:
+                        # Check if last code block looks incomplete
+                        last_code_text = last_code['code'].rstrip()
+                        continuation_indicators = [
+                            not last_code_text.endswith('}'),
+                            not last_code_text.endswith(';'),
+                            last_code_text.endswith(','),
+                            last_code_text.endswith('\\'),
+                        ]
+                        if any(continuation_indicators):
+                            should_merge = True
 
-                    # Remove the first code block from next page
-                    next_page['code_samples'].pop(0)
-                    next_page['code_blocks_count'] -= 1
+                    if should_merge:
+                        # Merge the code blocks
+                        merged_code = last_code['code'] + '\n' + first_next_code['code']
+                        last_code['code'] = merged_code
+                        last_code['merged_from_next_page'] = True
 
-                    self.log(f"  Merged code block from page {i+1} to {i+2}")
+                        # Remove the first code block from next page
+                        next_page['code_samples'].pop(0)
+                        next_page['code_blocks_count'] -= 1
+
+                        self.log(f"  Merged code block from page {i+1} to {j+1}")
+
+                        # Continue looking for more continuation blocks
+                        j += 1
+                        continue
+                    else:
+                        # Not a continuation, stop looking
+                        break
+
+                # If next page has no code blocks, skip it and continue looking
+                # But don't look too far ahead (max 5 pages total)
+                if j - i >= 5:
+                    break
+                j += 1
 
         return pages
+
 
     def create_chunks(self, pages):
         """
