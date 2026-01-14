@@ -75,7 +75,8 @@ class PDFToSkillConverter:
         # Scripts configuration
         self.scripts_config = config.get('scripts_config', {
             'line_threshold': 30,
-            'min_quality_score': 6.0
+            'min_quality_score': 6.0,
+            'max_display_lines': 5  # 在 reference 中显示的最大行数，超过则显示简化格式
         })
 
         # Extraction options
@@ -270,47 +271,66 @@ class PDFToSkillConverter:
                 # Add code samples (check both 'code_samples' and 'code_blocks' for compatibility)
                 code_list = page.get('code_samples') or page.get('code_blocks')
                 if code_list:
-                    f.write("### Code Examples\n\n")
+                    # First pass: identify which code blocks are extracted to scripts/
+                    # Track by language to avoid showing any code from same language if one is extracted
+                    extracted_languages = set()
+                    script_references = {}  # lang -> script_info
 
                     for code_index, code in enumerate(code_list):
                         lang = code.get('language', '')
-                        quality = code.get('quality_score', 0)
-
-                        # Clean code whitespace before processing
                         cleaned_code = self._clean_code_whitespace(code['code'])
                         line_count = len(cleaned_code.split('\n'))
 
-                        # Try to extract to scripts/
-                        # Note: _extract_code_to_script will also clean whitespace internally
+                        # Check if this code block is extracted to scripts/
                         script_info = self._extract_code_to_script(
                             code, page['page_number'], code_index
                         )
 
                         if script_info:
-                            # Code extracted to scripts/, reference it in markdown
-                            f.write(f"**{lang.upper()} Example** "
-                                   f"(Lines: {line_count}, Quality: {quality:.1f}/10)\n\n")
+                            extracted_languages.add(lang)
+                            # Store only the first (longest) script reference for each language
+                            if lang not in script_references:
+                                script_references[lang] = {
+                                    'filename': script_info['filename'],
+                                    'relative_path': script_info['relative_path'],
+                                    'line_count': line_count,
+                                    'quality': code.get('quality_score', 0)
+                                }
 
-                            f.write(f"**Script File**: [`{script_info['filename']}`](../{script_info['relative_path']})\n\n")
+                    # Second pass: generate output
+                    # If a language has extracted scripts, only show reference once, skip all code blocks
+                    f.write("### Code Examples\n\n")
 
-                            # Show code preview (first 10 lines) - use cleaned code
-                            code_lines = cleaned_code.split('\n')
-                            preview_lines = code_lines[:10]
-                            preview = '\n'.join(preview_lines)
-
-                            f.write(f"**Preview** (first 10 lines):\n\n")
-                            f.write(f"```{lang}\n{preview}\n")
-                            if len(code_lines) > 10:
-                                f.write(f"... ({len(code_lines) - 10} more lines)\n")
-                            f.write("```\n\n")
-
-                            f.write(f"**Usage**: Download and run the script directly, or refer to it in your code.\n\n")
-
+                    # Show script references for extracted languages
+                    max_display_lines = self.scripts_config.get('max_display_lines', 5)
+                    for lang, ref_info in script_references.items():
+                        line_count = ref_info['line_count']
+                        # 如果行数超过阈值，显示简化格式
+                        if line_count > max_display_lines:
+                            display_line_info = f"{max_display_lines}+ lines"
                         else:
-                            # Short code, inline display - use cleaned code
-                            f.write(f"**{lang.upper()} Example** "
-                                   f"(Lines: {line_count}, Quality: {quality:.1f}/10)\n\n")
-                            f.write(f"```{lang}\n{cleaned_code}\n```\n\n")
+                            display_line_info = f"{line_count} lines"
+                        
+                        f.write(f"**{lang.upper()} Script** "
+                               f"({display_line_info}, Quality: {ref_info['quality']:.1f}/10)\n\n")
+                        f.write(f"📄 **Complete script available**: [`{ref_info['filename']}`](../{ref_info['relative_path']})\n\n")
+
+                    # Show inline code only for non-extracted languages
+                    for code_index, code in enumerate(code_list):
+                        lang = code.get('language', '')
+                        quality = code.get('quality_score', 0)
+
+                        # Skip if this language has been extracted to scripts/
+                        if lang in extracted_languages:
+                            continue
+
+                        # Show inline code for short snippets
+                        cleaned_code = self._clean_code_whitespace(code['code'])
+                        line_count = len(cleaned_code.split('\n'))
+
+                        f.write(f"**{lang.upper()} Example** "
+                               f"(Lines: {line_count}, Quality: {quality:.1f}/10)\n\n")
+                        f.write(f"```{lang}\n{cleaned_code}\n```\n\n")
 
                 # Add images
                 if page.get('images'):
