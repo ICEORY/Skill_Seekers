@@ -863,6 +863,10 @@ class PDFExtractor:
             # 排除过短的标题（可能是图示）
             if len(title.strip()) < 5 or title.startswith(("图", "表", "公式")):
                 return False, None
+            
+            # 排除包含 binbash 或 usrbin 的标题（可能是 shebang 被误识别为 heading）
+            if '/bin/bash' in title.lower() or '/usr/bin/env' in title.lower():
+                return False, None
 
             # 排除纯数字或特殊字符
             if re.match(r'^[\d\.\s\-_]+$', title):
