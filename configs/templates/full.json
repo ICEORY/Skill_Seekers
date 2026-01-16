@@ -1,0 +1,56 @@
+{
+  "_description": "Complete configuration with all available options.",
+  "_usage": "Copy this template for maximum control over scraping behavior.",
+
+  "name": "CHANGE_ME",
+  "description": "Detailed description of when to use this skill",
+  "base_url": "https://CHANGE_ME/",
+
+  "start_urls": [
+    "https://CHANGE_ME/page1",
+    "https://CHANGE_ME/page2"
+  ],
+
+  "selectors": {
+    "main_content": "article",
+    "title": "h1",
+    "code_blocks": "pre code"
+  },
+
+  "url_patterns": {
+    "include": ["/docs", "/api", "/guides"],
+    "exclude": ["/blog", "/community", "/search"]
+  },
+
+  "categories": {
+    "_note": "Optional. Leave empty {} for auto-inference",
+    "getting_started": ["intro", "quickstart", "tutorial"],
+    "api": ["api", "reference", "class"],
+    "guides": ["guide", "how-to", "example"]
+  },
+
+  "rate_limit": 0.5,
+  "max_pages": 5000,
+  "workers": 4,
+  "async_mode": true,
+  "skip_llms_txt": false,
+
+  "checkpoint": {
+    "_note": "Save progress for resumable large scrapes",
+    "enabled": true,
+    "interval": 1000
+  },
+
+  "split_strategy": "router",
+  "split_config": {
+    "_note": "For very large documentation (10K+ pages)",
+    "target_pages_per_skill": 5000,
+    "create_router": true,
+    "split_by_categories": ["api", "guides"],
+    "router_name": "CHANGE_ME",
+    "parallel_scraping": true
+  },
+
+  "llms_txt_url": null,
+  "force_rescrape": false
+}

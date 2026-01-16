@@ -1,0 +1,24 @@
+{
+  "_description": "Minimal configuration for quick setup. Most settings are auto-detected.",
+  "_usage": [
+    "1. Fill in 'name' and 'base_url'",
+    "2. Run: skill-seekers scrape --config minimal.json --dry-run",
+    "3. If auto-detection works, proceed with actual scrape",
+    "4. If content is empty, use 'recommended.json' template instead"
+  ],
+
+  "name": "your-project-name",
+  "base_url": "https://docs.example.com/",
+
+  "_comment": "Optional overrides - uncomment if needed",
+  "_optional_overrides": {
+    "selectors": {
+      "_note": "Uncomment if auto-detection fails",
+      "main_content": "article",
+      "title": "h1",
+      "code_blocks": "pre code"
+    },
+    "max_pages": 500,
+    "rate_limit": 0.5
+  }
+}

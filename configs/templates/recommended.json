@@ -1,0 +1,43 @@
+{
+  "_description": "Recommended configuration with commonly customized settings.",
+  "_usage": [
+    "1. Fill in all fields marked with 'CHANGE_ME'",
+    "2. Inspect target site HTML to verify selectors",
+    "3. Test with --dry-run before full scrape"
+  ],
+
+  "name": "CHANGE_ME",
+  "description": "Use when working with CHANGE_ME",
+  "base_url": "https://CHANGE_ME/",
+
+  "selectors": {
+    "_note": "Inspect page HTML (F12) to find correct selectors",
+    "main_content": "article",
+    "title": "h1",
+    "code_blocks": "pre code"
+  },
+
+  "url_patterns": {
+    "_note": "Include: whitelist paths. Exclude: blacklist paths",
+    "include": ["/docs", "/api"],
+    "exclude": ["/blog", "/community"]
+  },
+
+  "rate_limit": 0.5,
+  "max_pages": 500,
+
+  "_comment": "Advanced settings (uncomment to use)",
+  "_optional": {
+    "start_urls": [
+      "https://CHANGE_ME/getting-started",
+      "https://CHANGE_ME/api-reference"
+    ],
+    "categories": {
+      "_note": "Leave empty {} for auto-inference (recommended)",
+      "getting_started": ["intro", "quickstart", "tutorial"],
+      "api": ["api", "reference", "class"]
+    },
+    "workers": 4,
+    "async_mode": true
+  }
+}
