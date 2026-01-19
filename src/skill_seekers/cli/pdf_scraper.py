@@ -237,12 +237,7 @@ class PDFToSkillConverter:
 
         # Generate scripts documentation if any scripts were extracted
         if self.extracted_scripts:
-            print(f"\n📜 Generating scripts documentation...")
-            self._generate_scripts_readme()
             print(f"   ✅ Extracted {len(self.extracted_scripts)} scripts to scripts/ directory")
-
-        # Generate index
-        self._generate_index(categorized)
 
         # Generate SKILL.md
         self._generate_skill_md(categorized)
@@ -354,29 +349,6 @@ class PDFToSkillConverter:
 
         print(f"   Generated: {filename}")
 
-    def _generate_index(self, categorized):
-        """Generate reference index"""
-        filename = f"{self.skill_dir}/references/index.md"
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(f"# {self.name.title()} Documentation Reference\n\n")
-            f.write("## Categories\n\n")
-
-            for cat_key, cat_data in categorized.items():
-                page_count = len(cat_data['pages'])
-                f.write(f"- [{cat_data['title']}]({cat_key}.md) ({page_count} pages)\n")
-
-            f.write("\n## Statistics\n\n")
-            stats = self.extracted_data.get('quality_statistics', {})
-            f.write(f"- Total pages: {self.extracted_data.get('total_pages', 0)}\n")
-            f.write(f"- Code blocks: {self.extracted_data.get('total_code_blocks', 0)}\n")
-            f.write(f"- Images: {self.extracted_data.get('total_images', 0)}\n")
-            if stats:
-                f.write(f"- Average code quality: {stats.get('average_quality', 0):.1f}/10\n")
-                f.write(f"- Valid code blocks: {stats.get('valid_code_blocks', 0)}\n")
-
-        print(f"   Generated: {filename}")
-
     def _generate_skill_md(self, categorized):
         """Generate main SKILL.md file"""
         filename = f"{self.skill_dir}/SKILL.md"
@@ -422,9 +394,6 @@ class PDFToSkillConverter:
                 for lang, count in sorted(scripts_by_lang.items(), key=lambda x: x[1], reverse=True):
                     f.write(f"- {lang.upper()}: {count} scripts\n")
 
-                f.write("\n**Scripts Directory**: `scripts/`\n\n")
-                f.write("See [`scripts/README.md`](scripts/README.md) for the complete list of available scripts.\n\n")
-
             f.write("\n## Quick Reference\n\n")
 
             # Get high-quality code samples
@@ -443,9 +412,6 @@ class PDFToSkillConverter:
                     quality = code.get('quality_score', 0)
                     f.write(f"**Example {i}** (Quality: {quality:.1f}/10):\n\n")
                     f.write(f"```{lang}\n{code['code'][:300]}...\n```\n\n")
-
-            f.write("## Navigation\n\n")
-            f.write("See `references/index.md` for complete documentation structure.\n\n")
 
             # Add language statistics
             langs = self.extracted_data.get('languages_detected', {})
@@ -742,61 +708,6 @@ class PDFToSkillConverter:
 
         return header + code
 
-    def _generate_scripts_readme(self):
-        """
-        Generate README.md for scripts/ directory
-        """
-        if not self.extracted_scripts:
-            return
-
-        readme_path = os.path.join(self.skill_dir, 'scripts', 'README.md')
-
-        with open(readme_path, 'w', encoding='utf-8') as f:
-            f.write(f"# {self.name.title()} - Code Examples\n\n")
-
-            f.write("This directory contains executable code examples extracted from the documentation.\n\n")
-
-            f.write("## Available Scripts\n\n")
-
-            # Group by language
-            scripts_by_lang = {}
-            for script in self.extracted_scripts:
-                lang = script['language']
-                if lang not in scripts_by_lang:
-                    scripts_by_lang[lang] = []
-                scripts_by_lang[lang].append(script)
-
-            # Generate table for each language
-            for lang, scripts in sorted(scripts_by_lang.items()):
-                f.write(f"### {lang.upper()}\n\n")
-                f.write("| Script | Lines | Quality | Page |\n")
-                f.write("|--------|-------|---------|------|\n")
-
-                for script in scripts:
-                    filename = script['filename']
-                    relative_path = script['relative_path']
-                    line_count = script['line_count']
-                    quality = script['quality_score']
-                    page_num = script['page_number']
-
-                    f.write(f"| [{filename}]({relative_path}) | {line_count} | {quality:.1f}/10 | {page_num} |\n")
-
-                f.write("\n")
-
-            f.write("## Usage\n\n")
-            f.write("1. Navigate to the desired script directory\n")
-            f.write("2. Download or copy the script file\n")
-            f.write("3. Run it in your local environment\n\n")
-
-            f.write("## Notes\n\n")
-            f.write("- All scripts include source attribution comments\n")
-            f.write("- Scripts are extracted from official documentation\n")
-            f.write("- Quality scores indicate code completeness and correctness\n\n")
-
-            f.write("---\n\n")
-            f.write("*Generated by Skill Seekers*\n")
-
-        print(f"   Generated: scripts/README.md")
 
 
 def main():
