@@ -1198,18 +1198,21 @@ class PDFExtractor:
         # Sort by quality score (highest first)
         code_samples.sort(key=lambda x: x['quality_score'], reverse=True)
 
-        # 方法1：从Markdown提取（原有方法）
+        # 方法1：从Markdown提取
         headings_from_markdown = []
         for line in markdown.split('\n'):
             if line.startswith('#'):
+                # 计算 # 的数量（标题级别）
                 level = len(line) - len(line.lstrip('#'))
-                text = line.lstrip('#').strip()
-                if text:
-                    headings_from_markdown.append({
-                        'level': f'h{level}',
-                        'text': text,
-                        'detection_method': 'markdown'
-                    })
+                # 检查 # 后面是否有空格（Markdown规范要求）
+                if level < len(line) and line[level] == ' ':
+                    text = line[level:].strip()
+                    if text:
+                        headings_from_markdown.append({
+                            'level': f'h{level}',
+                            'text': text,
+                            'detection_method': 'markdown'
+                        })
 
         # 方法2：基于字体属性检测
         headings_from_font = self.detect_headings_by_font(page)
