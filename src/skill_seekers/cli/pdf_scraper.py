@@ -18,6 +18,8 @@ import re
 import argparse
 from pathlib import Path
 
+import fitz  # PyMuPDF, used here for hyperlink extraction
+
 # Import the PDF extractor
 from .pdf_extractor_poc import PDFExtractor
 
@@ -90,6 +92,9 @@ class PDFToSkillConverter:
 
         # Scripts tracking
         self.extracted_scripts = []
+
+        # Cache for extracted PDF hyperlinks
+        self._pdf_links = None
 
     def extract_pdf(self):
         """Extract content from PDF using pdf_extractor_poc.py"""
@@ -239,11 +244,124 @@ class PDFToSkillConverter:
         if self.extracted_scripts:
             print(f"   ✅ Extracted {len(self.extracted_scripts)} scripts to scripts/ directory")
 
+        # Generate guides index from PDF hyperlinks (if any)
+        self._generate_guides_index()
+
         # Generate SKILL.md
         self._generate_skill_md(categorized)
 
         print(f"\n✅ Skill built successfully: {self.skill_dir}/")
         print(f"\n📦 Next step: Package with: skill-seekers package {self.skill_dir}/")
+
+    def _extract_pdf_links(self):
+        """
+        Extract hyperlink targets and associated text from the source PDF,
+        and normalize them into simple {name, url} items.
+
+        Returns:
+            list[dict]: Each item has keys: name, url
+        """
+        if self._pdf_links is not None:
+            return self._pdf_links
+
+        if not self.pdf_path:
+            self._pdf_links = []
+            return self._pdf_links
+
+        pdf_path = Path(self.pdf_path)
+        if not pdf_path.exists():
+            print(f"⚠️  PDF file for link extraction not found: {pdf_path}")
+            self._pdf_links = []
+            return self._pdf_links
+
+        print(f"\n🔗 Extracting hyperlinks from PDF: {pdf_path}")
+
+        items = []
+        seen = set()
+        try:
+            with fitz.open(pdf_path) as doc:
+                for page_index in range(len(doc)):
+                    page = doc[page_index]
+                    page_links = page.get_links()
+                    if not page_links:
+                        continue
+
+                    for link in page_links:
+                        uri = link.get("uri")
+                        if not uri:
+                            continue
+
+                        rect = link.get("from")
+                        if rect is None:
+                            continue
+
+                        # Clip text within the hyperlink rectangle to get visible label
+                        link_rect = fitz.Rect(rect)
+                        text = page.get_text("text", clip=link_rect).strip()
+
+                        name = text or ""
+                        url = uri or ""
+                        if not url:
+                            continue
+
+                        key = (name, url)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+
+                        items.append(
+                            {
+                                "name": name,
+                                "url": url,
+                            }
+                        )
+        except Exception as e:
+            print(f"⚠️  Failed to extract hyperlinks from PDF: {e}")
+            items = []
+
+        print(f"   ✅ Found {len(items)} unique hyperlinks in PDF")
+        self._pdf_links = items
+        return self._pdf_links
+
+    def _generate_guides_index(self):
+        """
+        Generate guides/index.json under the skill directory
+        containing PDF hyperlinks in a simple [{name, url}] format.
+        """
+        links = self._extract_pdf_links()
+        if not links:
+            return
+
+        guides_dir = os.path.join(self.skill_dir, "guides")
+        os.makedirs(guides_dir, exist_ok=True)
+
+        index_path = os.path.join(guides_dir, "index.json")
+
+        # links 已经是 [{name, url}] 的简化结构
+        # 移除 name 字段中的换行符和空格，并过滤掉名称小于5个字符的链接
+        cleaned_links = []
+        for link in links:
+            name = re.sub(r'[\r\n]+', ' ', link.get("name", "")).strip()
+            # 去除所有空格
+            name = name.replace(' ', '')
+            # 过滤掉名称小于5个字符的链接
+            if len(name) < 5:
+                continue
+            cleaned_link = {
+                "name": name,
+                "url": link.get("url", "")
+            }
+            cleaned_links.append(cleaned_link)
+
+        # 如果没有有效的链接，不生成文件
+        if not cleaned_links:
+            print(f"   ⚠️  No valid links found, skipping guides index")
+            return
+
+        with open(index_path, "w", encoding="utf-8") as f:
+            json.dump(cleaned_links, f, indent=2, ensure_ascii=False)
+
+        print(f"   ✅ Generated guides index: {index_path} ({len(cleaned_links)} items, filtered from {len(links)} total)")
 
     def _generate_reference_file(self, cat_key, cat_data):
         """Generate a reference markdown file for a category"""
