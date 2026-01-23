@@ -522,9 +522,6 @@ class MarkdownToSkillConverter:
             self._generate_scripts_readme()
             print(f"   ✅ Extracted {len(self.extracted_scripts)} scripts to scripts/ directory")
 
-        # Generate index
-        self._generate_index(categorized)
-
         # Generate SKILL.md
         self._generate_skill_md(categorized)
 
@@ -625,29 +622,6 @@ class MarkdownToSkillConverter:
 
         print(f"   Generated: {filename}")
 
-    def _generate_index(self, categorized):
-        """Generate reference index"""
-        filename = f"{self.skill_dir}/references/index.md"
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(f"# {self.name.title()} Documentation Reference\n\n")
-            f.write("## Categories\n\n")
-
-            for cat_key, cat_data in categorized.items():
-                page_count = len(cat_data['pages'])
-                f.write(f"- [{cat_data['title']}]({cat_key}.md) ({page_count} pages)\n")
-
-            f.write("\n## Statistics\n\n")
-            stats = self.extracted_data.get('quality_statistics', {})
-            f.write(f"- Total pages: {self.extracted_data.get('total_pages', 0)}\n")
-            f.write(f"- Code blocks: {self.extracted_data.get('total_code_blocks', 0)}\n")
-            f.write(f"- Headings: {self.extracted_data.get('total_headings', 0)}\n")
-            if stats:
-                f.write(f"- Average code quality: {stats.get('average_quality', 0):.1f}/10\n")
-                f.write(f"- Valid code blocks: {stats.get('valid_code_blocks', 0)}\n")
-
-        print(f"   Generated: {filename}")
-
     def _generate_skill_md(self, categorized):
         """Generate main SKILL.md file"""
         filename = f"{self.skill_dir}/SKILL.md"
@@ -716,7 +690,6 @@ class MarkdownToSkillConverter:
                     f.write(f"```{lang}\n{code['code'][:300]}...\n```\n\n")
 
             f.write("## Navigation\n\n")
-            f.write("See `references/index.md` for complete documentation structure.\n\n")
 
             # Add language statistics
             langs = self.extracted_data.get('languages_detected', {})
